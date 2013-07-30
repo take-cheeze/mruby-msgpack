@@ -19,3 +19,4 @@ and returns string serialized with msgpack.
 * hash key sorting option in dumping
 * option to use symbol in hash key
 * UTF-8 checking
+* check string end in loading function

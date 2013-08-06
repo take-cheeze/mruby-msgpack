@@ -2,14 +2,23 @@
 #include <mruby/array.h>
 #include <mruby/hash.h>
 #include <mruby/string.h>
+
 #include <algorithm>
 #include <limits>
+
+#include <cassert>
+#include <cmath>
 #include <stdint.h>
 
 namespace {
 
 #define not_impl(M, msg, ...) \
   mrb_raisef(M, mrb_class_get(M, "NotImplementedError"), msg, __VA_ARGS__)
+
+template<class T, class V>
+bool check_min_max(V const v) {
+  return std::numeric_limits<T>::min() <= v and v <= std::numeric_limits<T>::max();
+}
 
 uint8_t read_byte(mrb_state* M, char const*& src, char const* end) {
   if(src >= end) mrb_raise(M, mrb_class_get(M, "RangeError"), "read_byte error");
@@ -45,9 +54,19 @@ template<class T>
 T read_int(mrb_state* M, char const*& src, char const* end) {
   T ret = 0;
   for(size_t i = 0; i < sizeof(T); ++i) {
-    ret |= read_byte(M, src, end) << (8 * (sizeof(T) - i - 1));
+    ret |= static_cast<T>(read_byte(M, src, end)) << (8 * (sizeof(T) - i - 1));
   }
   return ret;
+}
+
+template<class T>
+mrb_value float_fallback(mrb_state* M, T const val) {
+  assert(std::numeric_limits<T>::is_integer);
+  return
+      check_min_max<mrb_int>(val)? mrb_fixnum_value(val):
+      check_min_max<mrb_float>(val)? mrb_float_value(M, val):
+      (mrb_raise(M, mrb_class_get(M, "RangeError"), "integer out of range"),
+       mrb_nil_value());
 }
 
 mrb_value load(mrb_state* M, char const*& src, char const* end) {
@@ -69,22 +88,15 @@ mrb_value load(mrb_state* M, char const*& src, char const* end) {
           *reinterpret_cast<double const*>(&val)));
     }
 
-    case 0xCC: return mrb_fixnum_value(uint8_t (read_int<uint8_t >(M, src, end)));
-    case 0xCD: return mrb_fixnum_value(uint16_t(read_int<uint16_t>(M, src, end)));
-#ifndef MRB_INT16
-    case 0xCE: return mrb_fixnum_value(uint32_t(read_int<uint32_t>(M, src, end)));
-#  ifdef MRB_INT64
-    case 0xCF: return mrb_fixnum_value(uint64_t(read_int<uint64_t>(M, src, end)));
-#  endif
-#endif
-    case 0xD0: return mrb_fixnum_value(int8_t (read_int<uint8_t >(M, src, end)));
-    case 0xD1: return mrb_fixnum_value(int16_t(read_int<uint16_t>(M, src, end)));
-#ifndef MRB_INT16
-    case 0xD2: return mrb_fixnum_value(int32_t(read_int<uint32_t>(M, src, end)));
-#  ifdef MRB_INT64
-    case 0xD3: return mrb_fixnum_value(int64_t(read_int<uint64_t>(M, src, end)));
-#  endif
-#endif
+    // mrb_int is at least int16_t
+    case 0xCC: return mrb_fixnum_value(read_int<uint8_t>(M, src, end));
+    case 0xCD: return float_fallback(M, read_int<uint16_t>(M, src, end));
+    case 0xCE: return float_fallback(M, read_int<uint32_t>(M, src, end));
+    case 0xCF: return float_fallback(M, read_int<uint64_t>(M, src, end));
+    case 0xD0: return mrb_fixnum_value(read_int<int8_t>(M, src, end));
+    case 0xD1: return mrb_fixnum_value(read_int<int16_t>(M, src, end));
+    case 0xD2: return float_fallback(M, read_int<int32_t>(M, src, end));
+    case 0xD3: return float_fallback(M, read_int<int64_t>(M, src, end));
 
     case 0xDA: return read_raw(M, src, end, read_int<uint16_t>(M, src, end));
     case 0xDB: return read_raw(M, src, end, read_int<uint32_t>(M, src, end));
@@ -124,21 +136,43 @@ mrb_value const& write_int_with_tag(mrb_state* M, mrb_value const& out, T v) {
   return write_int<T>(M, write_tag<tag>(M, out), v);
 }
 
-#define check_min_max_of_type(val, type)       \
-  (std::numeric_limits<type>::min() <= val and \
-   val <= std::numeric_limits<type>::max())    \
-
 template<uint8_t FixBase, uint8_t FixRange, uint8_t NonFixTag>
 void write_tag_with_fix(mrb_state* M, mrb_value const& out, size_t const size) {
   (size < FixRange)
       ? write_int<uint8_t>(M, out, FixBase + size):
-      check_min_max_of_type(size, uint16_t)
+      check_min_max<uint16_t>(size)
       ? write_int<uint16_t>(M, write_int<uint8_t>(M, out, NonFixTag + 0), size):
-      check_min_max_of_type(size, uint32_t)
+      check_min_max<uint32_t>(size)
       ? write_int<uint32_t>(M, write_int<uint8_t>(M, out, NonFixTag + 1), size):
       (mrb_raisef(M, mrb_class_get(M, "RangeError"),
-                  "size too big: %S (max: 0xffffffff)", mrb_fixnum_value(size)), out);
+                  "size too big: %S (max: 0xffffffff)", mrb_float_value(M, size)), out);
 }
+
+#define PP_write_int(tag, type) \
+      check_min_max<type>(num)? write_int_with_tag<tag, type>(M, out, num):
+#define range_error                                                     \
+      (mrb_raisef(M, mrb_class_get(M, "RangeError"),                    \
+                  "integer out of range: %S", mrb_float_value(M, num)), out)
+
+template<class T>
+mrb_value const& dump_integer(mrb_state* M, mrb_value const& out, T const num) {
+  return
+      (-32 <= num and num <= 0x7f)? write_int<uint8_t>(M, out, mrb_int(num) & 0xff):
+      (num >= 0)? (
+          PP_write_int(0xCC, uint8_t)
+          PP_write_int(0xCD, uint16_t)
+          PP_write_int(0xCE, uint32_t)
+          PP_write_int(0xCF, uint64_t)
+          range_error):
+      PP_write_int(0xD0, int8_t)
+      PP_write_int(0xD1, int16_t)
+      PP_write_int(0xD2, int32_t)
+      PP_write_int(0xD3, int64_t)
+      range_error;
+}
+
+#undef range_error
+#undef PP_write_int
 
 mrb_value const& dump(mrb_state* M, mrb_value const& out, mrb_value const& v) {
   if(mrb_nil_p(v)) { return write_tag<0xC0>(M, out); }
@@ -147,49 +181,20 @@ mrb_value const& dump(mrb_state* M, mrb_value const& out, mrb_value const& v) {
     case MRB_TT_FALSE: return write_tag<0xC2>(M, out);
     case MRB_TT_TRUE : return write_tag<0xC3>(M, out);
 
-#define PP_write_int(tag, type) \
-      check_min_max_of_type(num, type)? write_int_with_tag<tag, type>(M, out, num):
-#define range_error                                                     \
-      (mrb_raisef(M, mrb_class_get(M, "RangeError"),                    \
-                  "integer out of range: %S", mrb_fixnum_value(num)), out)
-
-    case MRB_TT_FIXNUM: {
-      mrb_int const num = mrb_fixnum(v);
-      return
-          (-32 <= num and num <= 0x7f)? write_int<uint8_t>(M, out, num & 0xff):
-          (num >= 0)? (
-              PP_write_int(0xCC, uint8_t)
-              PP_write_int(0xCD, uint16_t)
-#ifndef MRB_INT16
-              PP_write_int(0xCE, uint32_t)
-#  ifdef MRB_INT64
-              PP_write_int(0xCF, uint64_t)
-#  endif
-#endif
-              range_error):
-          PP_write_int(0xD0, int8_t)
-          PP_write_int(0xD1, int16_t)
-#ifndef MRB_INT16
-          PP_write_int(0xD2, int32_t)
-#  ifdef MRB_INT64
-          PP_write_int(0xD3, int64_t)
-#  endif
-#endif
-          range_error;
-    }
-
-#undef range_error
-#undef PP_write_int
+    case MRB_TT_FIXNUM: return dump_integer(M, out, mrb_fixnum(v));
 
     case MRB_TT_FLOAT: {
       mrb_float num = mrb_float(v);
-      char* ptr = reinterpret_cast<char*>(&num);
+      if(num == std::ceil(num)) { return dump_integer(M, out, num); }
+      else {
+        char* ptr = reinterpret_cast<char*>(&num);
 #ifndef MRB_ENDIAN_BIG
-      for(size_t i = 0; i < sizeof(mrb_float) / 2; ++i) {
-        std::swap(ptr[i], ptr[sizeof(mrb_float) - i - 1]);
-      }
+        for(size_t i = 0; i < sizeof(mrb_float) / 2; ++i) {
+          std::swap(ptr[i], ptr[sizeof(mrb_float) - i - 1]);
+        }
 #endif
-      return mrb_str_buf_cat(M, out, ptr, sizeof(mrb_float)), out;
+        return mrb_str_buf_cat(M, out, ptr, sizeof(mrb_float)), out;
+      }
     }
 
     case MRB_TT_ARRAY:

@@ -157,7 +157,7 @@ void write_tag_with_fix(mrb_state* M, mrb_value const& out, size_t const size) {
 template<class T>
 mrb_value const& dump_integer(mrb_state* M, mrb_value const& out, T const num) {
   return
-      (-32 <= num and num <= 0x7f)? write_int<uint8_t>(M, out, mrb_int(num) & 0xff):
+      (-32 <= num and num <= 0x7f)? write_int<uint8_t>(M, out, (mrb_int)num & 0xff):
       (num >= 0)? (
           PP_write_int(0xCC, uint8_t)
           PP_write_int(0xCD, uint16_t)
@@ -204,7 +204,7 @@ mrb_value const& dump(mrb_state* M, mrb_value const& out, mrb_value const& v) {
 
     case MRB_TT_HASH: {
       mrb_value const keys = mrb_hash_keys(M, v);
-      mrb_funcall_argv(M, keys, mrb_intern(M, "sort!"), 0, NULL);
+      mrb_funcall_argv(M, keys, mrb_intern_lit(M, "sort!"), 0, NULL);
       write_tag_with_fix<0x80, 0x10, 0xDE>(M, out, RARRAY_LEN(keys));
       for(size_t i = 0; i < RARRAY_LEN(keys); ++i) {
         dump(M, out, RARRAY_PTR(keys)[i]);
@@ -214,7 +214,7 @@ mrb_value const& dump(mrb_state* M, mrb_value const& out, mrb_value const& v) {
     }
 
     case MRB_TT_SYMBOL: {
-      size_t len;
+      mrb_int len;
       char const* str = mrb_sym2name_len(M, mrb_symbol(v), &len);
       write_tag_with_fix<0xA0, 0x20, 0xDA>(M, out, len);
       return mrb_str_buf_cat(M, out, str, len), out;
@@ -226,8 +226,8 @@ mrb_value const& dump(mrb_state* M, mrb_value const& out, mrb_value const& v) {
       return out;
 
     default: {
-      mrb_sym const func_sym = mrb_intern(M, "to_msgpack");
-      if(not mrb_obj_respond_to(mrb_obj_class(M, v), func_sym)) {
+      mrb_sym const func_sym = mrb_intern_lit(M, "to_msgpack");
+      if(not mrb_obj_respond_to(M, mrb_obj_class(M, v), func_sym)) {
         return not_impl(M, "cannot dump object with class \"%S\"",
                         mrb_str_new_cstr(M, mrb_obj_classname(M, v))), out;
       } else {
@@ -245,7 +245,7 @@ mrb_value msgpack_dump(mrb_state* M, mrb_value self) {
 
 mrb_value msgpack_load(mrb_state* M, mrb_value self) {
   char const* str;
-  int len;
+  mrb_int len;
   mrb_get_args(M, "s", &str, &len);
   return load(M, str, str + len);
 }

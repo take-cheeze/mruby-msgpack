@@ -204,7 +204,6 @@ mrb_value const& dump(mrb_state* M, mrb_value const& out, mrb_value const& v) {
 
     case MRB_TT_HASH: {
       mrb_value const keys = mrb_hash_keys(M, v);
-      mrb_funcall_argv(M, keys, mrb_intern_lit(M, "sort!"), 0, NULL);
       write_tag_with_fix<0x80, 0x10, 0xDE>(M, out, RARRAY_LEN(keys));
       for(size_t i = 0; i < RARRAY_LEN(keys); ++i) {
         dump(M, out, RARRAY_PTR(keys)[i]);

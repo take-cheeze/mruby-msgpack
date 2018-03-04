@@ -185,16 +185,18 @@ mrb_value const& dump(mrb_state* M, mrb_value const& out, mrb_value const& v) {
 
     case MRB_TT_FLOAT: {
       mrb_float num = mrb_float(v);
-      if(num == std::ceil(num)) { return dump_integer(M, out, num); }
-      else {
-        char* ptr = reinterpret_cast<char*>(&num);
+      char* ptr = reinterpret_cast<char*>(&num);
 #ifndef MRB_ENDIAN_BIG
-        for(size_t i = 0; i < sizeof(mrb_float) / 2; ++i) {
-          std::swap(ptr[i], ptr[sizeof(mrb_float) - i - 1]);
-        }
-#endif
-        return mrb_str_buf_cat(M, out, ptr, sizeof(mrb_float)), out;
+      for(size_t i = 0; i < sizeof(mrb_float) / 2; ++i) {
+        std::swap(ptr[i], ptr[sizeof(mrb_float) - i - 1]);
       }
+#endif
+#ifdef MRB_USE_FLOAT
+      write_tag<0xCA>(M, out);
+#else
+      write_tag<0xCB>(M, out);
+#endif
+      return mrb_str_buf_cat(M, out, ptr, sizeof(mrb_float)), out;
     }
 
     case MRB_TT_ARRAY:

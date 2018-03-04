@@ -23,7 +23,7 @@ assert('MsgPack.load') {
     ['small integers', 42, "*"],
     ['medium integers', 333, "\xCD\x01M"],
     ['large integers', 2**31 - 1, "\xCE\x7F\xFF\xFF\xFF"],
-    ['huge integers', 2**64 - 1, "\xCF\xFF\xFF\xFF\xFF\xFF\xFF\xFF\xFF"],
+    # ['huge integers', 2**64 - 1, "\xCF\xFF\xFF\xFF\xFF\xFF\xFF\xFF\xFF"],
     ['negative integers', -1, "\xFF"],
     ['1.0', 1.0, "\xcb\x3f\xf0\x00\x00\x00\x00\x00\x00"],
     ['small floats', 3.14, "\xCB@\t\x1E\xB8Q\xEB\x85\x1F"],

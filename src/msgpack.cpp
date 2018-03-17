@@ -5,10 +5,12 @@
 
 #include <algorithm>
 #include <limits>
+#include <type_traits>
 
 #include <cassert>
 #include <cmath>
-#include <stdint.h>
+#include <cstdint>
+#include <cstring>
 
 namespace {
 
@@ -18,6 +20,11 @@ namespace {
 template<class T, class V>
 bool check_min_max(V const v) {
   return std::numeric_limits<T>::min() <= v and v <= std::numeric_limits<T>::max();
+}
+
+template<class T, class V>
+bool check_max(V const v) {
+  return v <= std::numeric_limits<T>::max();
 }
 
 uint8_t read_byte(mrb_state* M, char const*& src, char const* end) {
@@ -54,14 +61,14 @@ template<class T>
 T read_int(mrb_state* M, char const*& src, char const* end) {
   T ret = 0;
   for(size_t i = 0; i < sizeof(T); ++i) {
-    ret |= static_cast<T>(read_byte(M, src, end)) << (8 * (sizeof(T) - i - 1));
+    ret |= static_cast<typename std::make_unsigned<T>::type>(read_byte(M, src, end)) << (8 * (sizeof(T) - i - 1));
   }
   return ret;
 }
 
 template<class T>
 mrb_value float_fallback(mrb_state* M, T const val) {
-  assert(std::numeric_limits<T>::is_integer);
+  static_assert(std::numeric_limits<T>::is_integer, "input must be integer");
   return
       check_min_max<mrb_int>(val)? mrb_fixnum_value(val):
       check_min_max<mrb_float>(val)? mrb_float_value(M, val):
@@ -79,13 +86,15 @@ mrb_value load(mrb_state* M, char const*& src, char const* end) {
 
     case 0xCA: { // float
       uint32_t const val = read_int<uint32_t>(M, src, end);
-      return mrb_float_value(M, static_cast<mrb_float>(
-          *reinterpret_cast<float const*>(&val)));
+      float converted;
+      std::memcpy(&converted, &val, sizeof(float));
+      return mrb_float_value(M, static_cast<mrb_float>(converted));
     }
     case 0xCB: { // double
       uint64_t const val = read_int<uint64_t>(M, src, end);
-      return mrb_float_value(M, static_cast<mrb_float>(
-          *reinterpret_cast<double const*>(&val)));
+      double converted;
+      std::memcpy(&converted, &val, sizeof(double));
+      return mrb_float_value(M, static_cast<mrb_float>(converted));
     }
 
     // mrb_int is at least int16_t
@@ -107,18 +116,18 @@ mrb_value load(mrb_state* M, char const*& src, char const* end) {
 
     default:
       return
-          (0 <= tag and tag <= 0x7f)? mrb_fixnum_value(tag):
+          (/* 0 <= tag and */ tag <= 0x7f)? mrb_fixnum_value(tag):
           (0x80 <= tag and tag <= 0x8F)? read_map(M, src, end, tag & 0x0f):
           (0x90 <= tag and tag <= 0x9F)? read_array(M, src, end, tag & 0x0f):
           (0xA0 <= tag and tag <= 0xBf)? read_raw(M, src, end, tag & 0x1f):
-          (0xE0 <= tag and tag <= 0xff)? mrb_fixnum_value(~0xff | tag):
+          (0xE0 <= tag /* and tag <= 0xff */)? mrb_fixnum_value(~0xff | tag):
           (not_impl(M, "unsupported type tag: %S", mrb_fixnum_value(tag)), mrb_nil_value());
   }
 }
 
 template<uint8_t T>
 mrb_value const& write_tag(mrb_state* M, mrb_value const& out) {
-  char const buf[] = {T};
+  char const buf[] = {char(T)};
   return mrb_str_buf_cat(M, out, buf, sizeof(buf)), out;
 }
 
@@ -149,20 +158,22 @@ void write_tag_with_fix(mrb_state* M, mrb_value const& out, size_t const size) {
 }
 
 #define PP_write_int(tag, type) \
-      check_min_max<type>(num)? write_int_with_tag<tag, type>(M, out, num):
+  check_min_max<type>(num)? write_int_with_tag<tag, type>(M, out, num):
+#define PP_write_uint(tag, type) \
+  check_max<type>(num)? write_int_with_tag<tag, type>(M, out, num):
 #define range_error                                                     \
-      (mrb_raisef(M, mrb_class_get(M, "RangeError"),                    \
-                  "integer out of range: %S", mrb_float_value(M, num)), out)
+  (mrb_raisef(M, mrb_class_get(M, "RangeError"),                        \
+              "integer out of range: %S", mrb_float_value(M, num)), out)
 
 template<class T>
 mrb_value const& dump_integer(mrb_state* M, mrb_value const& out, T const num) {
   return
-      (-32 <= num and num <= 0x7f)? write_int<uint8_t>(M, out, (mrb_int)num & 0xff):
+      (-32 <= num and num <= 0x7f)? write_int<uint8_t>(M, out, static_cast<mrb_int>(num) & 0xff):
       (num >= 0)? (
-          PP_write_int(0xCC, uint8_t)
-          PP_write_int(0xCD, uint16_t)
-          PP_write_int(0xCE, uint32_t)
-          PP_write_int(0xCF, uint64_t)
+          PP_write_uint(0xCC, uint8_t)
+          PP_write_uint(0xCD, uint16_t)
+          PP_write_uint(0xCE, uint32_t)
+          PP_write_uint(0xCF, uint64_t)
           range_error):
       PP_write_int(0xD0, int8_t)
       PP_write_int(0xD1, int16_t)
@@ -172,6 +183,7 @@ mrb_value const& dump_integer(mrb_state* M, mrb_value const& out, T const num) {
 }
 
 #undef range_error
+#undef PP_write_uint
 #undef PP_write_int
 
 mrb_value const& dump(mrb_state* M, mrb_value const& out, mrb_value const& v) {
@@ -191,23 +203,19 @@ mrb_value const& dump(mrb_state* M, mrb_value const& out, mrb_value const& v) {
         std::swap(ptr[i], ptr[sizeof(mrb_float) - i - 1]);
       }
 #endif
-#ifdef MRB_USE_FLOAT
-      write_tag<0xCA>(M, out);
-#else
-      write_tag<0xCB>(M, out);
-#endif
+      write_tag<(sizeof(num) == 4)? 0xCA : 0xCB>(M, out);
       return mrb_str_buf_cat(M, out, ptr, sizeof(mrb_float)), out;
     }
 
     case MRB_TT_ARRAY:
       write_tag_with_fix<0x90, 0x10, 0xDC>(M, out, RARRAY_LEN(v));
-      for(size_t i = 0; i < RARRAY_LEN(v); ++i) { dump(M, out, RARRAY_PTR(v)[i]); }
+      for(mrb_int i = 0; i < RARRAY_LEN(v); ++i) { dump(M, out, RARRAY_PTR(v)[i]); }
       return out;
 
     case MRB_TT_HASH: {
       mrb_value const keys = mrb_hash_keys(M, v);
       write_tag_with_fix<0x80, 0x10, 0xDE>(M, out, RARRAY_LEN(keys));
-      for(size_t i = 0; i < RARRAY_LEN(keys); ++i) {
+      for(mrb_int i = 0; i < RARRAY_LEN(keys); ++i) {
         dump(M, out, RARRAY_PTR(keys)[i]);
         dump(M, out, mrb_hash_get(M, v, RARRAY_PTR(keys)[i]));
       }

@@ -56,6 +56,7 @@ assert('MsgPack.load') {
   ]
 }.each do |ctx, cases|
   cases.each do |desc, unpacked, packed|
+    next if MsgPack::SIZEOF_FLOAT != 8 && packed[0] == "\xCB"
     assert("#{ctx}: MsgPack encode #{desc}") do
       assert_equal(packed, MsgPack.dump(unpacked))
     end

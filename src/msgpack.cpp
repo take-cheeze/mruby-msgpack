@@ -266,6 +266,8 @@ void mrb_mruby_msgpack_gem_init(mrb_state* M) {
   RClass* const mod = mrb_define_module(M, "MsgPack");
   mrb_define_module_function(M, mod, "load", &msgpack_load, MRB_ARGS_REQ(1));
   mrb_define_module_function(M, mod, "dump", &msgpack_dump, MRB_ARGS_REQ(1));
+
+  mrb_define_const(M, mod, "SIZEOF_FLOAT", mrb_fixnum_value(sizeof(mrb_float)));
 }
 
 extern "C"
